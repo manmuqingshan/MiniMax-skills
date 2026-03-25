@@ -74,10 +74,10 @@ You can run the validation script locally before submitting:
 python .claude/skills/pr-review/scripts/validate_skills.py
 ```
 
-## License
-
-[MIT](./LICENSE)
-
 ## ⭐ Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=MiniMax-AI/skills&type=Date)](https://star-history.com/#MiniMax-AI/skills&Date)
+
+## License
+
+[MIT](./LICENSE)

@@ -74,10 +74,10 @@ ln -s ~/.minimax-skills/skills/* ~/.config/opencode/skills/
 python .claude/skills/pr-review/scripts/validate_skills.py
 ```
 
-## 许可证
-
-[MIT](./LICENSE)
-
 ## ⭐ Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=MiniMax-AI/skills&type=Date)](https://star-history.com/#MiniMax-AI/skills&Date)
+
+## 许可证
+
+[MIT](./LICENSE)
