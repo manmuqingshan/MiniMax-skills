@@ -2,547 +2,300 @@
 name: minimax-music-playlist
 description: >
   Generate personalized music playlists by analyzing the user's music taste from local
-  apps (Apple Music, QQ Music) and generation feedback history. Triggers on "generate
-  playlist", "make a playlist", "歌单", "推荐歌单", "根据我的口味生成", "personalized
-  playlist", "music taste", "音乐画像", "scan my music", "扫描我的音乐",
-  "playlist based on my taste", "根据喜好生成".
+  apps (Apple Music, QQ Music, Spotify, NetEase) and generation feedback history. Triggers
+  on any request involving playlist generation, music taste profiling, or personalized
+  music recommendations. Supports multilingual triggers — match equivalent phrases in
+  any language.
 license: MIT
 metadata:
-  version: "1.0"
+  version: "2.0"
   category: creative
 ---
 
 # MiniMax Music Playlist — Personalized Playlist Generator
 
-Scan the user's local music libraries to build a taste profile, then generate
-a personalized playlist using the MiniMax Music API.
-
-**Self-contained**: all scripts (including playback) are in this skill's `scripts/` directory.
+Scan the user's local music libraries, build a taste profile, generate a personalized
+playlist, and create an album cover. This skill is designed for both agent and direct
+user invocation — adapt interaction style to context.
 
 ## Prerequisites
 
-- **mmx CLI** (required for music generation):
+- **mmx CLI** — music & image generation. Install: `npm install -g mmx-cli`. Auth: `mmx auth login --api-key <key>`.
+- **Python 3** — for scanning scripts you write on the fly (stdlib only, no pip).
+- **Audio player** — `mpv`, `ffplay`, or `afplay` (macOS built-in).
 
-  **Install:**
-  ```bash
-  npm install -g mmx-cli
-  ```
+## Language
 
-  **Authenticate (first time only):**
-  ```bash
-  mmx auth login --api-key <your-minimax-api-key>
-  ```
-  Get your API key from [MiniMax Platform](https://platform.minimaxi.com/).
+Detect the user's language from their message. **All user-facing text must be
+in the same language as the user's prompt** — do not mix languages. If the user
+writes in Chinese, all output (profile summary, theme suggestions, playlist plan,
+playback info) must be fully in Chinese. If in English, all in English.
 
-- Python 3.8+ (all scripts use only stdlib).
-
----
-
-## Workflow Overview
-
-```
-Scan music sources → Build taste profile → Plan playlist → Generate songs → Play & feedback
-```
-
-## Language Detection
-
-Detect the user's **interaction language** from their message at the start of the session:
-- Chinese (中文) → Set `LANG=zh` — all UI interactions in Chinese
-- English → Set `LANG=en` — all UI interactions in English
-
-**IMPORTANT — `LANG` controls UI only, NOT lyrics language.**
-Each song's lyrics language is determined independently by its genre/style (see
-"Per-song lyrics language" in Step 3). A Chinese-speaking user can get a playlist
-with Korean, Japanese, English, and Chinese songs mixed together.
-
-Pass `--lang $LANG` to playback scripts (not scan scripts).
-Respond to the user in their detected language. Use the matching template below.
+All `mmx` generation prompts should be in English for best quality.
+Each song's lyrics language follows its genre (K-pop → Korean, J-pop → Japanese, etc.),
+NOT the user's UI language.
 
 ---
 
-## Step 1: Scan Music Sources
+## Workflow
 
-Scan available local music apps. Run whichever scanners are available — the skill
-works with any combination of sources.
-
-### Apple Music
-
-```bash
-python3 ~/.claude/skills/minimax-music-playlist/scripts/scan_apple_music.py \
-  --output /tmp/apple_music_data.json
+```
+1. Scan local music apps → 2. Build taste profile → 3. Plan playlist
+→ 4. Generate songs (mmx music) → 5. Generate cover (mmx image) → 6. Play → 7. Save & feedback
 ```
 
-The script uses `osascript` to query Music.app. It auto-filters TTS/test files.
-If Music.app is not running or has no library, the script outputs an empty result.
+---
 
-### QQ Music
+## Step 1: Scan Local Music Sources
 
-```bash
-python3 ~/.claude/skills/minimax-music-playlist/scripts/scan_qq_music.py \
-  --output /tmp/qq_music_data.json
-```
+Discover which music apps are installed and extract listening data. You should write
+your own scanning scripts or commands — the approach below is guidance, not prescription.
 
-Reads QQ Music's SQLite database and preferences plist. Extracts songs, playlist
-assignments, and search history. If QQ Music is not installed, outputs empty result.
+**Known macOS music app data locations:**
 
-### Spotify
+| App | Where to look | Data format |
+|-----|--------------|-------------|
+| Apple Music | `osascript` to query Music.app | AppleScript returns track name, artist, album, genre, play count |
+| QQ Music | `~/Library/Containers/com.tencent.QQMusicMac*/Data/` | SQLite DB + plist files |
+| Spotify | `~/Library/Application Support/Spotify/` | LevelDB cache, URL cache, osascript for current track |
+| NetEase | `~/Library/Containers/com.netease.163music/Data/Documents/storage/` | JSON files (webdata, tracks, FM queue), Cache.db |
 
-```bash
-python3 ~/.claude/skills/minimax-music-playlist/scripts/scan_spotify.py \
-  --output /tmp/spotify_data.json
-```
+**What to extract from each source:**
+- Track names + artist names (primary signal)
+- Playlist names and membership (e.g., a playlist named "Chinese Traditional" tells you genre preference)
+- Play counts if available (weight frequently played tracks higher)
+- Scene/mood tags if available (NetEase has these)
+- Search history if accessible
 
-Reads Spotify's local LevelDB cache, queries the running app via osascript, and
-scans the URL cache for API responses. If Spotify is newly installed, data may be
-sparse — the script warns about this. Data accumulates as the user listens more.
+**Approach:**
+1. Check which apps are installed (`ls` the data paths)
+2. For each installed app, figure out how to read its data (SQLite, JSON, plist, osascript)
+3. Write a Python script using only stdlib to extract tracks and artists
+4. If no apps found, ask the user to describe their taste manually
 
-### NetEase Cloud Music (网易云音乐)
-
-```bash
-python3 ~/.claude/skills/minimax-music-playlist/scripts/scan_netease.py \
-  --output /tmp/netease_data.json
-```
-
-Reads NetEase's webdata JSON files (tracks, FM queue, recommendations), Cache.db,
-and infers genre preferences from recommended playlist names and scene tags.
-The app uses a web-based architecture, so data is in
-`~/Library/Containers/com.netease.163music/Data/Documents/storage/`.
-
-### Other Music Apps
-
-If the user has other apps (e.g., 酷狗, 酷我) not yet supported, tell them:
-
-**If LANG=zh:**
-```
-目前支持扫描 Apple Music、QQ 音乐、Spotify 和网易云音乐。
-如果你用其他平台，可以告诉我你喜欢的风格/艺术家，我手动加入画像。
-```
-
-**If LANG=en:**
-```
-Currently supported: Apple Music, QQ Music, Spotify, and NetEase Cloud Music.
-If you use other platforms, tell me your preferred styles/artists and I'll add them to your profile manually.
-```
-
-### Manual Input
-
-If no music apps are available, or the user wants to supplement:
-
-**If LANG=zh:**
-```
-🎵 告诉我你喜欢的音乐，我来帮你建画像：
-
-💡 比如：
-  · "我喜欢周杰伦、陶喆那种华语R&B"
-  · "最近在听很多K-pop和日系city pop"
-  · "偏好忧郁慢歌，不太听电子舞曲"
-```
-
-**If LANG=en:**
-```
-🎵 Tell me about your music taste, and I'll build a profile:
-
-💡 For example:
-  · "I like Jay Chou and David Tao style C-pop R&B"
-  · "I've been listening to a lot of K-pop and Japanese city pop"
-  · "I prefer melancholy ballads, not into EDM"
-```
+**Privacy rule:** Never show raw track lists to the user. Only show aggregated stats.
 
 ---
 
 ## Step 2: Build Taste Profile
 
-Merge all data sources into a unified taste profile:
+From the scanned data, build a taste profile covering:
 
-```bash
-python3 ~/.claude/skills/minimax-music-playlist/scripts/build_taste_profile.py \
-  --apple-music /tmp/apple_music_data.json \
-  --qq-music /tmp/qq_music_data.json \
-  --spotify /tmp/spotify_data.json \
-  --netease /tmp/netease_data.json \
-  --gen-history ~/Music/minimax-gen/ \
-  --artist-map ~/.claude/skills/minimax-music-playlist/data/artist_genre_map.json \
-  --lang $LANG \
-  --output ~/.claude/skills/minimax-music-playlist/data/taste_profile.json
+- **Genre distribution** — what styles the user listens to (e.g., J-pop 20%, R&B 15%, Classical 10%)
+- **Mood tendencies** — emotional tone preferences (melancholic, energetic, calm, romantic, etc.)
+- **Vocal preference** — male vs female voice ratio
+- **Tempo preference** — slow / moderate / upbeat / fast distribution
+- **Language distribution** — zh, en, ja, ko, etc.
+- **Top artists** — most listened artists
+
+**How to infer genre/mood from artist names:**
+Most raw data only has artist + track names without genre tags. To enrich this:
+- Use `mmx text chat --message "<prompt>" --quiet` to batch-query artist genres
+- Keep batches small (10 artists per request) for reliable results
+- Cache results to `<SKILL_DIR>/data/artist_cache.json` to avoid re-querying
+- **Use concurrent requests** (e.g., ThreadPoolExecutor) to speed up lookups
+- **Retry failed batches** — if a batch returns invalid JSON or errors, retry it
+  once before skipping. Network/model glitches are common; a retry usually succeeds
+
+**Profile caching:**
+- Save profile to `<SKILL_DIR>/data/taste_profile.json`
+- If a profile less than 7 days old exists, reuse it (offer rescan option)
+- If older or missing, rebuild
+
+**Show user a summary:**
+```
+Your Music Profile:
+  Sources: QQ Music 145 | Apple Music 230 | Spotify 20 | NetEase 197
+  Genres: J-pop 20% | R&B 15% | Classical 10% | Indie Pop 9%
+  Moods: Melancholic 25% | Calm 20% | Romantic 18%
+  Vocals: Female 65% | Male 35%
+  Top artists: Faye Wong, Ryuichi Sakamoto, Taylor Swift, Jay Chou, Taeko Onuki
 ```
 
-The script infers genres from artists using the artist-genre mapping table, computes
-weighted scores, and outputs a taste profile.
-
-**Show the user a privacy-safe summary** — never expose raw track lists:
-
-**If LANG=zh:**
-```
-🎵 你的音乐画像：
-  📊 数据源：QQ音乐 145首 | Apple Music 42首 | Spotify 20首 | 网易云 15首 | 已生成 9首
-  🎸 Top 风格：华语流行 35% | R&B 20% | K-pop 10% | 中国风 8%
-  💭 情绪：忧郁 30% | 浪漫 25% | 温暖 20%
-  🎤 声线：偏好男声 55% | 女声 40%
-  🎵 Top 艺术家：周杰伦、陶喆、孙燕姿、王力宏、方大同
-
-这个画像准确吗？(确认后开始生成歌单，或告诉我要调整什么)
-```
-
-**If LANG=en:**
-```
-🎵 Your Music Profile:
-  📊 Sources: QQ Music 145 | Apple Music 42 | Spotify 20 | NetEase 15 | Generated 9
-  🎸 Top styles: C-pop 35% | R&B 20% | K-pop 10% | Chinese-style 8%
-  💭 Moods: Melancholy 30% | Romantic 25% | Warm 20%
-  🎤 Vocals: Male 55% | Female 40%
-  🎵 Top artists: Jay Chou, David Tao, Stefanie Sun, Leehom Wang, Khalil Fong
-
-Does this look right? (Confirm to generate playlist, or tell me what to adjust)
-```
-
-### Profile caching
-
-The taste profile is saved at:
-`~/.claude/skills/minimax-music-playlist/data/taste_profile.json`
-
-Before running the scan + build pipeline, check if a profile already exists:
-- **If profile exists and is less than 7 days old**: skip scanning, reuse the profile.
-  Show the summary and ask if the user wants to rescan.
-- **If profile is older than 7 days or doesn't exist**: run the full scan + build.
-- **Force rescan**: If the user says "重新扫描" or "rescan", delete the file and rebuild.
+If invoked by an agent with clear parameters, skip the confirmation and proceed.
+If invoked by a user directly, ask if the profile looks right before continuing.
 
 ---
 
 ## Step 3: Plan Playlist
 
-Ask the user for a theme (optional):
+**Ask the user for a theme/scene before generating.** This is the one
+interactive step in the workflow. All other steps run autonomously.
 
-**If LANG=zh:**
+If the theme was already provided in the invocation (e.g., the agent or user
+said "generate a late night chill playlist"), use it directly and skip the question.
+Otherwise, ask:
+
 ```
-🎵 想要什么主题的歌单？
+What theme would you like for your playlist? Here are some suggestions:
 
-💡 比如：
-  · "深夜放松" — 适合睡前的慢歌
-  · "通勤路上" — 节奏轻快提神
-  · "雨天" — 配合窗外的雨
-  · "让我自己选" — 不指定主题，根据画像随机
-  · 或者直接描述你想要的氛围
-```
+- "Late night chill" — relaxing slow songs
+- "Commute" — upbeat and energizing
+- "Rainy day" — melancholic & cozy
+- "Surprise me" — random based on your taste
 
-**If LANG=en:**
-```
-🎵 What theme for your playlist?
-
-💡 Examples:
-  · "Late night chill" — relaxing slow songs
-  · "Commute" — upbeat and energizing
-  · "Rainy day" — matching the rain outside
-  · "Surprise me" — random based on your profile
-  · Or just describe the vibe you want
+Or tell me your own vibe!
 ```
 
-If the user doesn't specify, use the top mood from their profile as default.
+Once the user picks a theme, proceed automatically through generation, cover,
+playback, and saving — no further confirmations needed.
 
-### Per-song lyrics language
+Determine playlist parameters:
+- **Theme/mood** — from user input, or default to top mood from profile
+- **Song count** — from user input, or default to 5
+- **Genre mix** — weighted by profile, with variety
 
-Each song in the playlist gets its own `lyrics_lang` based on its genre/style.
-Use this mapping to assign the natural language for each genre:
+**Per-song lyrics language** follows genre:
 
-| Genre / Style | lyrics_lang | Notes |
-|---------------|-------------|-------|
-| K-pop, Korean R&B, Korean ballad | Korean (한국어) | |
-| J-pop, city pop, J-rock, anime OST | Japanese (日本語) | |
-| Latin pop, reggaeton, bossa nova | Spanish/Portuguese | bossa nova → Portuguese |
-| C-pop, 华语流行, 中国风 | Chinese (中文) | |
-| Western pop, indie, rock, jazz, R&B | English | |
-| Hip-hop, rap | Match artist region or user preference | |
-| Instrumental, lo-fi, ambient | N/A (no lyrics) | Use `--instrumental` |
+| Genre | Lyrics language |
+|-------|----------------|
+| K-pop, Korean R&B/ballad | Korean |
+| J-pop, city pop, J-rock | Japanese |
+| C-pop, Chinese-style, Mandopop | Chinese |
+| Western pop/indie/rock/jazz/R&B | English |
+| Latin pop, bossa nova | Spanish/Portuguese |
+| Instrumental, lo-fi, ambient | No lyrics (`--instrumental`) |
 
-**Rules**:
-- If the taste profile shows a strong genre preference (e.g., K-pop 20%), plan some
-  songs in that genre's native language — don't force everything into zh/en.
-- The user can override per-song: "第2首改成中文" → change that song's lyrics_lang.
-- When showing the plan, display the lyrics language tag clearly (e.g., `[韩语/女声]`).
-- The `--prompt` for each song MUST include an explicit lyrics language instruction,
-  e.g., "with Korean lyrics" or "sung in Japanese". This guides the API to generate
-  lyrics in the correct language when using `--lyrics-optimizer`.
+Embed language naturally into the mmx prompt via vocal description:
+- Good: `"A melancholy Chinese R&B ballad with a gentle introspective male voice, electric piano, bass, slow tempo"`
+- Bad: `"R&B ballad, melancholy... sung in Chinese"`
 
-Generate the playlist plan:
+**Show the playlist plan before generating.** Display each song with two lines:
+the first line shows genre, mood, and vocal/language tag; the second line shows
+the generation prompt description. Example:
 
-```bash
-python3 ~/.claude/skills/minimax-music-playlist/scripts/generate_playlist.py \
-  --profile ~/.claude/skills/minimax-music-playlist/data/taste_profile.json \
-  --theme "<user theme>" \
-  --count <number> \
-  --lang $LANG \
-  --output /tmp/playlist_plan.json
+```
+Playlist Plan: Late Night Chill (5 songs)
+
+1. Neo-soul R&B — introspective  English/male vocal
+   A mellow neo-soul R&B ballad with warm baritone, electric piano, smooth bass
+
+2. Lo-fi hip-hop — dreamy  Instrumental
+   Dreamy lo-fi with sampled piano, vinyl crackle, soft electronic drums
+
+3. Smooth jazz — romantic  English/female vocal
+   Silky female voice, saxophone, piano, romantic starlit night
+
+4. Indie folk — melancholic  English/male vocal
+   Tender male voice, acoustic guitar, harmonica, quiet solitude
+
+5. Ambient electronic — calm  Instrumental
+   Soft synth pads, gentle arpeggios, dreamy atmosphere
 ```
 
-**Show the full plan to the user** for review:
-
-**If LANG=zh:**
-```
-🎵 歌单计划：深夜放松 (5首)
-
-  1. 华语R&B慢歌 — 忧郁, 内省 [中文/男声]
-     Prompt: R&B, neo-soul, 忧郁, 内省, 温柔男声, 电钢琴, 贝斯, 慢板, 深夜独处, sung in Chinese
-
-  2. K-pop 抒情 — 温暖, 浪漫 [韩语/女声]
-     Prompt: K-pop, 流行, 温暖, 浪漫, 清澈女声, 合成器, 钢琴, 中板, 星空下, with Korean lyrics
-
-  3. 独立民谣 — 内省, 平静 [中文/男声]
-     Prompt: 独立民谣, folk, 内省, 平静, 温柔男声, 原声吉他, 口琴, 慢板, 深夜独处, sung in Chinese
-
-  4. Lo-fi hip-hop — 平静, 梦幻 [纯音乐]
-     Prompt: lo-fi hip-hop, 平静, 梦幻, 采样钢琴, 电子鼓, vinyl crackle, 慢板, 深夜书桌
-
-  5. 爵士 — 温暖, 浪漫 [英语/女声]
-     Prompt: smooth jazz, bossa nova, 温暖, 浪漫, 清澈女声, 钢琴, 贝斯, 萨克斯, 中板, with English lyrics
-
-确认生成？(直接回车确认，或告诉我要调整哪首)
-```
-
-**If LANG=en:**
-```
-🎵 Playlist Plan: Late Night Chill (5 songs)
-
-  1. C-pop R&B Ballad — melancholy, introspective [Chinese/male vocal]
-     Prompt: R&B, neo-soul, melancholy, introspective, gentle male voice, electric piano, bass, slow tempo, late night solitude, sung in Chinese
-
-  2. K-pop Ballad — warm, romantic [Korean/female vocal]
-     Prompt: K-pop, pop, warm, romantic, clear female voice, synth, piano, mid-tempo, under the stars, with Korean lyrics
-
-  3. Indie Folk — introspective, calm [Chinese/male vocal]
-     Prompt: indie folk, folk, introspective, calm, gentle male voice, acoustic guitar, harmonica, slow tempo, late night solitude, sung in Chinese
-
-  4. Lo-fi hip-hop — calm, dreamy [instrumental]
-     Prompt: lo-fi hip-hop, calm, dreamy, sampled piano, electronic drums, vinyl crackle, slow tempo, late night desk
-
-  5. Jazz — warm, romantic [English/female vocal]
-     Prompt: smooth jazz, bossa nova, warm, romantic, clear female voice, piano, bass, saxophone, mid-tempo, with English lyrics
-
-Confirm? (press enter to confirm, or tell me which song to adjust)
-```
-
-The user can:
-- Confirm all → proceed to generation
-- Modify individual songs ("第3首换成摇滚")
-- Change count ("只要3首")
-- Regenerate plan ("换一批")
+After showing the plan, proceed directly to generation — no confirmation needed.
+The user has already chosen the theme; the plan is shown for transparency, not approval.
 
 ---
 
-## Step 4: Generate All Songs
+## Step 4: Generate Songs
 
-Generate all songs concurrently, then play the complete playlist.
-
-**IMPORTANT**: Do NOT play individual songs after each `mmx music generate` call.
-Skip any per-song playback logic from the `minimax-music-gen` skill.
-Only play the complete playlist at the end using `play_playlist.py`.
-
-### Concurrent Generation
-
-**Concurrency rules:**
-- Up to **5 songs in parallel**
-
-Launch songs in batches. For a 5-song playlist with mmx, launch all 5 at once.
-For a 10-song playlist, launch songs 1-5, then 6-10 when the first batch finishes.
-
-**Example (5 songs, mmx CLI, all parallel):**
+Use `mmx music generate` to create all songs. **Generate concurrently** (up to 5 in parallel).
 
 ```bash
-# Launch all 5 in parallel (background with &, wait for all)
-mmx music generate --prompt "<prompt_1>" --lyrics-optimizer \
-  --out ~/Music/minimax-gen/playlists/<name>/01_xxx.mp3 --quiet --non-interactive &
-mmx music generate --prompt "<prompt_2>" --instrumental \
-  --out ~/Music/minimax-gen/playlists/<name>/02_xxx.mp3 --quiet --non-interactive &
-mmx music generate --prompt "<prompt_3>" --lyrics-optimizer \
-  --out ~/Music/minimax-gen/playlists/<name>/03_xxx.mp3 --quiet --non-interactive &
-mmx music generate --prompt "<prompt_4>" --instrumental \
-  --out ~/Music/minimax-gen/playlists/<name>/04_xxx.mp3 --quiet --non-interactive &
-mmx music generate --prompt "<prompt_5>" --lyrics-optimizer \
-  --out ~/Music/minimax-gen/playlists/<name>/05_xxx.mp3 --quiet --non-interactive &
+# Example: 5 songs in parallel
+mmx music generate --prompt "<english_prompt_1>" --lyrics-optimizer \
+  --out ~/Music/minimax-gen/playlists/<name>/01_desc.mp3 --quiet --non-interactive &
+mmx music generate --prompt "<english_prompt_2>" --instrumental \
+  --out ~/Music/minimax-gen/playlists/<name>/02_desc.mp3 --quiet --non-interactive &
+# ... more songs ...
 wait
 ```
 
-Show progress as each finishes:
+**Key flags:**
+- `--lyrics-optimizer` — auto-generate lyrics from prompt (for vocal tracks)
+- `--instrumental` — no vocals
+- `--vocals "<description>"` — vocal style (e.g., "warm Chinese male baritone")
+- `--genre`, `--mood`, `--tempo`, `--instruments` — fine-grained control
+- `--quiet --non-interactive` — suppress interactive output for batch mode
+- `--out <path>` — save to file
 
-**If LANG=zh:**
-```
-⏳ 正在并发生成 5 首歌曲...
-✅ [1/5] 生成完毕：01_bossa_nova.mp3
-✅ [2/5] 生成完毕：03_indie_folk.mp3
-✅ [3/5] 生成完毕：02_kpop_stars.mp3
-✅ [4/5] 生成完毕：05_jazz.mp3
-✅ [5/5] 生成完毕：04_lofi.mp3
-```
+**File naming:** `<NN>_<short_desc>.mp3` (e.g., `01_rnb_midnight.mp3`)
 
-**If LANG=en:**
-```
-⏳ Generating 5 songs concurrently...
-✅ [1/5] Complete: 01_bossa_nova.mp3
-✅ [2/5] Complete: 03_indie_folk.mp3
-...
-```
+**Output directory:** `~/Music/minimax-gen/playlists/<playlist_name>/`
 
-If generation fails for a song, log the error and continue — do not block other songs.
-
-### When all songs are generated, play the playlist:
-
-**If LANG=zh:**
-```
-🎉 歌单「深夜放松」生成完毕！共 5 首
-
-📁 文件：~/Music/minimax-gen/playlists/深夜放松/
-  01_rnb_midnight.mp3
-  02_kpop_stars.mp3
-  ...
-
-▶️  开始播放歌单...
-```
-
-**If LANG=en:**
-```
-🎉 Playlist "Late Night Chill" complete! 5 songs
-
-📁 Files: ~/Music/minimax-gen/playlists/late_night_chill/
-  01_rnb_midnight.mp3
-  02_kpop_stars.mp3
-  ...
-
-▶️  Starting playlist playback...
-```
-
-Play the complete playlist using the dedicated script:
-
-```bash
-python3 ~/.claude/skills/minimax-music-playlist/scripts/play_playlist.py \
-  ~/Music/minimax-gen/playlists/<playlist_name>/ \
-  --lang $LANG \
-  --auto
-```
-
-### Replaying existing playlists
-
-If the user asks to replay a previously generated playlist:
-
-```bash
-ls ~/Music/minimax-gen/playlists/
-```
-
-Show available playlists and play the selected one:
-
-```bash
-python3 ~/.claude/skills/minimax-music-playlist/scripts/play_playlist.py \
-  ~/Music/minimax-gen/playlists/<playlist_name>/ \
-  --lang $LANG \
-  --auto
-```
+If a song fails, **retry once** before skipping. Log the error and continue with the rest.
 
 ---
 
-## Step 5: Save Playlist
+## Step 5: Generate Album Cover
 
-Create a playlist metadata file:
+Generate the album cover **concurrently with the songs** (Step 4), not after.
+Launch the `mmx image generate` call in parallel with the song generation calls.
 
+Craft a prompt that reflects the playlist's theme, mood, and genre mix. The image
+should feel like an album cover — artistic, evocative, not literal.
+
+```bash
+mmx image generate \
+  --prompt "<cover description based on playlist theme and mood>" \
+  --aspect-ratio 1:1 \
+  --out-dir ~/Music/minimax-gen/playlists/<playlist_name>/ \
+  --out-prefix cover \
+  --quiet
 ```
-~/Music/minimax-gen/playlists/<playlist_name>/playlist.json
-```
 
-Content:
+**Prompt guidance:**
+- Abstract/artistic style works best for album covers
+- Reference the dominant mood and genre (e.g., "dreamy late-night cityscape, neon reflections, lo-fi aesthetic")
+- Do NOT include text or song titles in the image prompt
+- Aspect ratio should be 1:1 (square, standard album cover)
+
+---
+
+## Step 6: Playback
+
+Detect an available player and play the playlist in order:
+
+| Player | Command | Controls |
+|--------|---------|----------|
+| mpv | `mpv --no-video <file>` | `q` skip, Space pause, arrows seek |
+| ffplay | `ffplay -nodisp -autoexit <file>` | `q` skip |
+| afplay | `afplay <file>` | Ctrl+C skip |
+
+Play all `.mp3` files in the playlist directory in filename order.
+Only play the songs generated in this session — if the directory has old files
+from a previous run, clean them out first or filter by the known filenames.
+If no player is found, just show the file paths.
+
+---
+
+## Step 7: Save & Feedback
+
+Save playlist metadata to `<playlist_dir>/playlist.json`:
 ```json
 {
-  "name": "深夜放松",
-  "theme": "深夜放松",
-  "created_at": "ISO timestamp",
+  "name": "Late Night Chill",
+  "theme": "late night chill",
+  "created_at": "2026-04-11T22:00:00",
   "song_count": 5,
+  "cover": "cover_001.png",
   "songs": [
-    {
-      "index": 1,
-      "filename": "01_rnb_midnight.mp3",
-      "prompt": "...",
-      "lyrics": "...",
-      "rating": null
-    }
+    {"index": 1, "filename": "01_rnb_midnight.mp3", "prompt": "...", "rating": null}
   ]
 }
 ```
 
----
-
-## Step 6: Feedback & Profile Update
-
-After listening, ask for feedback:
-
-**If LANG=zh:**
-```
-🎵 这个歌单怎么样？
-
-  对每首歌打分（可选）：
-  1. 华语R&B慢歌 — 👍 / 👎 / 跳过
-  2. K-pop 抒情 — 👍 / 👎 / 跳过
-  ...
-
-  或者整体评价：
-  🎉 很满意！以后多来这种
-  🔄 还行，某些方面可以调整
-  🗑️ 不太喜欢，换个方向
-```
-
-**If LANG=en:**
-```
-🎵 How was this playlist?
-
-  Rate each song (optional):
-  1. C-pop R&B Ballad — 👍 / 👎 / skip
-  2. K-pop Ballad — 👍 / 👎 / skip
-  ...
-
-  Or overall rating:
-  🎉 Loved it! More like this
-  🔄 Decent, but could adjust some things
-  🗑️ Not my vibe, try a different direction
-```
-
-Based on feedback:
-- **Per-song ratings**: Update playlist.json with ratings. Extract prompt tags from
-  liked/disliked songs and update taste_profile.json's feedback section.
-- **Overall positive**: Record the theme + genre combination as successful.
-- **Needs adjustment**: Ask what to change, regenerate specific songs.
-- **Negative**: Ask what went wrong, note disliked genres/moods in feedback.
+If the user is present, ask for feedback (per-song or overall). Update the
+taste profile's feedback section with liked/disliked genres and prompts to
+improve future playlists.
 
 ---
 
 ## Replaying Playlists
 
-If the user asks to play a previously generated playlist:
-
-```bash
-ls ~/Music/minimax-gen/playlists/
-```
-
-Show available playlists and play the selected one song by song.
-
----
-
-## Error Handling
-
-| Error | Action |
-|-------|--------|
-| No music apps installed | Guide to manual input mode |
-| QQ Music DB locked | Suggest closing QQ Music and retrying |
-| Apple Music not running | Try to launch via osascript, or skip |
-| Spotify newly installed | Warn that data is sparse, suggest using app more |
-| NetEase no track data | Data accumulates with usage, suggest browsing/playing |
-| API timeout during generation | Retry once, then skip that song and continue |
-| Generation fails for a song | Log error, continue with next song |
-| No taste profile exists | Run scan first |
-| Profile older than 7 days | Suggest rescan, but allow using old profile |
+If asked to play a previous playlist: `ls ~/Music/minimax-gen/playlists/`, show
+available ones, and play the selected one.
 
 ---
 
 ## Notes
 
-- Privacy: Never show raw track lists. Only show aggregated statistics (top genres,
-  language percentages, top artists).
-- The artist_genre_map.json at `data/artist_genre_map.json` can be extended manually
-  if the user's library has artists not in the map.
-- Generated playlists are saved alongside individual songs in `~/Music/minimax-gen/playlists/`.
-- The taste profile is persistent across sessions.
-- All scripts use Python stdlib only — no pip dependencies.
-- Music generation uses `mmx music generate` CLI directly.
+- **Agent vs user invocation**: The theme/scene question (Step 3) is the single
+  interactive touchpoint. If the theme is already provided in the invocation,
+  skip the question. Everything else runs autonomously.
+- **No hardcoded scripts**: Write scanning/analysis scripts on the fly as needed.
+  Use Python stdlib only. Cache results to avoid redundant work.
+- **Skill directory**: `<SKILL_DIR>` = the directory containing this SKILL.md file.
+  Data/cache files go in `<SKILL_DIR>/data/`.
+- **All mmx prompts in English** for best generation quality.
