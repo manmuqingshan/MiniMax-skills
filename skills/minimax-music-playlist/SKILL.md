@@ -1,8 +1,8 @@
 ---
 name: minimax-music-playlist
 description: >
-  Generate personalized music playlists by analyzing the user's music taste from local
-  apps (Apple Music, Spotify, NetEase) and generation feedback history. Triggers
+  Generate personalized music playlists by analyzing the user's music taste
+  and generation feedback history. Triggers
   on any request involving playlist generation, music taste profiling, or personalized
   music recommendations. Supports multilingual triggers — match equivalent phrases in
   any language.
