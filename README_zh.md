@@ -96,6 +96,10 @@ python .claude/skills/pr-review/scripts/validate_skills.py
 
 [![Star History Chart](https://api.star-history.com/svg?repos=MiniMax-AI/skills&type=Date)](https://star-history.com/#MiniMax-AI/skills&Date)
 
+## 致谢
+
+本仓库中的部分技能参考或借鉴了开源社区的优秀作品。完整致谢列表请查看 [CREDITS.md](./CREDITS.md)。
+
 ## 许可证
 
 [MIT](./LICENSE)

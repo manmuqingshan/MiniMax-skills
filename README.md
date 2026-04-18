@@ -96,6 +96,10 @@ python .claude/skills/pr-review/scripts/validate_skills.py
 
 [![Star History Chart](https://api.star-history.com/svg?repos=MiniMax-AI/skills&type=Date)](https://star-history.com/#MiniMax-AI/skills&Date)
 
+## Credits
+
+Some skills in this repository are inspired by or derived from work by the open-source community. See [CREDITS.md](./CREDITS.md) for full acknowledgments.
+
 ## License
 
 [MIT](./LICENSE)

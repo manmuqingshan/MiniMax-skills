@@ -12,6 +12,7 @@ metadata:
   version: "1.0.0"
   category: frontend
   sources:
+    - taste-skill by Leonxlnx (https://github.com/Leonxlnx/taste-skill) — Design engineering framework
     - Framer Motion documentation
     - GSAP / GreenSock documentation
     - Three.js documentation
